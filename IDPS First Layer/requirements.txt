@@ -6,3 +6,4 @@ joblib
 paho-mqtt
 tensorflow
 psutil
+scapy
