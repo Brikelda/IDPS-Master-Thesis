@@ -4,9 +4,9 @@ import time
 import numpy as np
 from modules.event_receiver import EventReceiver
 from modules.state_collector import StateCollector
-from modules.command_interceptor import get_pending_command 
 from modules.simulator_engine import MultiModelSimulator
 from modules.decision_engine import DecisionEngine
+from modbus_sniffer import start_sniffing_in_background, intercepted_commands
 
 # === Initialize modules ===
 event_receiver = EventReceiver()
@@ -16,15 +16,14 @@ decider = DecisionEngine()
 # Load trained multi-model XGBoost simulator
 sim = MultiModelSimulator(
     model_paths={
-        'TANKLEVEL': "xgb_model_tanklevel.json",
-        'OUTPUTFLOW': "xgb_model_outputflow.json",
-        'RESERVETANKVOLUME': "xgb_model_reservetankvolume.json"
+        'TANKLEVEL': "modules/xgb_model_tanklevel.json",
+        'OUTPUTFLOW': "modules/xgb_model_outputflow.json",
+        'RESERVETANKVOLUME': "modules/xgb_model_reservetankvolume.json"
     },
-
     feature_paths={
-        'TANKLEVEL': "xgb_features_tanklevel.pkl",
-        'OUTPUTFLOW': "xgb_features_outputflow.pkl",
-        'RESERVETANKVOLUME': "xgb_features_reservetankvolume.pkl"
+        'TANKLEVEL': "modules/xgb_features_tanklevel.pkl",
+        'OUTPUTFLOW': "modules/xgb_features_outputflow.pkl",
+        'RESERVETANKVOLUME': "modules/xgb_features_reservetankvolume.pkl"
     }
 )
 
@@ -34,6 +33,9 @@ cooldown_start = None
 ACTIVE = False
 COOLDOWN_PERIOD = 120  # seconds
 
+# === Start sniffing intercepted WRITE packets ===
+start_sniffing_in_background(interface="Ethernet")
+print("🚀 Second Layer initialized and listening for WRITE commands...")
 
 def handle_anomaly(anomaly):
     global last_alert_time, ACTIVE, cooldown_start
@@ -47,8 +49,14 @@ def handle_anomaly(anomaly):
     current_state = state_collector.collect()
     print("📡 System State Collected")
 
-    # 2. Get intercepted commands (simulate batch of commands)
-    pending_commands = get_pending_command()
+    # 2. Pull intercepted WRITE commands
+    pending_commands = []
+    while not intercepted_commands.empty():
+        pending_commands.append(intercepted_commands.get())
+
+    if not pending_commands:
+        print("⚠️ No intercepted commands to evaluate.")
+        return
 
     # 3. Run predictions
     predictions, latencies = sim.predict_batch(current_state, pending_commands)
@@ -58,7 +66,7 @@ def handle_anomaly(anomaly):
         print(f"\n🔍 Command {i + 1}: {pending_commands[i]}")
         print(f"→ Predictions: {pred}")
         print(f"⏱️  Latency: {lat:.4f} sec")
-    
+
     print("\n=== Batch Summary ===")
     print(f"Total commands: {len(pending_commands)}")
     print(f"Average latency: {np.mean(latencies):.4f} sec")
@@ -71,10 +79,8 @@ def handle_anomaly(anomaly):
         print(f"🧠 Global Decision: {global_decision} | Breakdown: {decisions}")
         decider.act_on_decision(global_decision, decisions, pending_commands[i])
 
-
 def handle_state_update(state_msg):
     state_collector.update_state(state_msg)
-
 
 def check_safe_to_sleep():
     global last_alert_time, ACTIVE, cooldown_start
@@ -91,7 +97,7 @@ def check_safe_to_sleep():
 
     if cooldown_start:
         stable_state = state_collector.check_stability()
-        no_pending_threats = True  # assume clear buffer for now
+        no_pending_threats = intercepted_commands.empty()
 
         if (now - cooldown_start) > COOLDOWN_PERIOD and stable_state and no_pending_threats:
             print("😴 System stabilized. Second layer going back to sleep.")
@@ -102,7 +108,6 @@ def check_safe_to_sleep():
 
     return False
 
-
 # === Start MQTT listener ===
 event_receiver.start_listening(callback=handle_anomaly, state_callback=handle_state_update)
 
@@ -111,4 +116,3 @@ while True:
     if ACTIVE:
         check_safe_to_sleep()
     time.sleep(5)
-
