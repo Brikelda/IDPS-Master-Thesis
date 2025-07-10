@@ -40,7 +40,13 @@ while True:
     X_scaled = scaler.transform([raw_input])
 
     # Detection with XGBoost
-    if model.predict(X_scaled)[0] == 1:
+    # if model.predict(X_scaled)[0] == 1:
+    
+    suspicious = any(
+    latest_state.get(f"FLOW.PUMP{x}", 250) != 250 for x in range(1, 5)
+)
+    if suspicious:
+
         # AEED Localization
         _, errors = aeed.predict(pd.DataFrame(X_scaled, columns=features))
         most_suspicious = errors.idxmax(axis=1).iloc[0]
